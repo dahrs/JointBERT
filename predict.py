@@ -207,6 +207,75 @@ def predict(pred_config):
             f.write("<{}> -> {}\n".format(intent_label_lst[intent_pred], line.strip()))
 
     logger.info("Prediction Done!")
+    
+
+def predict_from_str(string, model_dir): 
+    ##### not in original script
+    # make pred_config
+    class Namespace:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+    pred_config = Namespace(batch_size=1, model_dir='{0}_model'.format(dataset_name), no_cuda=False)
+    # load model and args
+    args = get_args(pred_config)
+    device = get_device(pred_config)
+    model = load_model(pred_config, args, device)
+    logger.info(args)
+    intent_label_lst = get_intent_labels(args)
+    slot_label_lst = get_slot_labels(args)
+    # Convert input file to TensorDataset
+    pad_token_label_id = args.ignore_index
+    tokenizer = load_tokenizer(args)
+    # lines = read_input_file(pred_config)
+    lines = [string.split()]
+    dataset = convert_input_file_to_tensor_dataset(lines, pred_config, args, tokenizer, pad_token_label_id)
+    # Predict
+    sampler = SequentialSampler(dataset)
+    data_loader = DataLoader(dataset, sampler=sampler, batch_size=pred_config.batch_size)
+    all_slot_label_mask = None
+    intent_preds = None
+    slot_preds = None
+    for batch in tqdm(data_loader, desc="Predicting"):
+        batch = tuple(t.to(device) for t in batch)
+        with torch.no_grad():
+            inputs = {"input_ids": batch[0],
+                      "attention_mask": batch[1],
+                      "intent_label_ids": None,
+                      "slot_labels_ids": None}
+            if args.model_type != "distilbert":
+                inputs["token_type_ids"] = batch[2]
+            outputs = model(**inputs)
+            _, (intent_logits, slot_logits) = outputs[:2]
+            # Intent Prediction
+            if intent_preds is None:
+                intent_preds = intent_logits.detach().cpu().numpy()
+            else:
+                intent_preds = np.append(intent_preds, intent_logits.detach().cpu().numpy(), axis=0)
+            # Slot prediction
+            if slot_preds is None:
+                if args.use_crf:
+                    # decode() in `torchcrf` returns list with best index directly
+                    slot_preds = np.array(model.crf.decode(slot_logits))
+                else:
+                    slot_preds = slot_logits.detach().cpu().numpy()
+                all_slot_label_mask = batch[3].detach().cpu().numpy()
+            else:
+                if args.use_crf:
+                    slot_preds = np.append(slot_preds, np.array(model.crf.decode(slot_logits)), axis=0)
+                else:
+                    slot_preds = np.append(slot_preds, slot_logits.detach().cpu().numpy(), axis=0)
+                all_slot_label_mask = np.append(all_slot_label_mask, batch[3].detach().cpu().numpy(), axis=0)
+    intent_preds = np.argmax(intent_preds, axis=1)
+    if not args.use_crf:
+        slot_preds = np.argmax(slot_preds, axis=2)
+    slot_label_map = {i: label for i, label in enumerate(slot_label_lst)}
+    slot_preds_list = [[] for _ in range(slot_preds.shape[0])]
+    for i in range(slot_preds.shape[0]):
+        for j in range(slot_preds.shape[1]):
+            if all_slot_label_mask[i, j] != pad_token_label_id:
+                slot_preds_list[i].append(slot_label_map[slot_preds[i][j]])
+    logger.info("Prediction Done!")
+    return lines[0], slot_preds_list[0], intent_label_lst[intent_preds[0]]
 
 
 if __name__ == "__main__":
