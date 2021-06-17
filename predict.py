@@ -215,7 +215,7 @@ def predict_from_str(string, model_dir):
     class Namespace:
         def __init__(self, **kwargs):
             self.__dict__.update(kwargs)
-    pred_config = Namespace(batch_size=1, model_dir='{0}_model'.format(dataset_name), no_cuda=False)
+    pred_config = Namespace(batch_size=1, model_dir=model_dir, no_cuda=False)
     # load model and args
     args = get_args(pred_config)
     device = get_device(pred_config)
